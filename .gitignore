@@ -1,0 +1,15 @@
+# OAuth tokens injected at install time — never commit
+firefox-injected-tokens.json
+
+# Built packages
+*.xpi
+*.crx
+ext.zip
+
+# Build artifacts
+web-ext-artifacts/
+node_modules/
+
+# OS junk
+.DS_Store
+Thumbs.db

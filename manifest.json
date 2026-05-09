@@ -1,0 +1,96 @@
+{
+  "manifest_version": 3,
+  "name": "Claude for Firefox",
+  "version": "1.0.70",
+  "description": "Claude in your browser. Navigate, click, and fill forms. Works with Claude Code and Claude Desktop.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "claude-for-firefox@anthropic.community",
+      "strict_min_version": "128.0"
+    }
+  },
+  "icons": {
+    "128": "icon-128.png"
+  },
+  "background": {
+    "scripts": ["firefox-bg-loader.js"],
+    "type": "module"
+  },
+  "sidebar_action": {
+    "default_title": "Claude",
+    "default_panel": "sidepanel.html",
+    "default_icon": "icon-128.png",
+    "open_at_install": false
+  },
+  "action": {
+    "default_title": "Open Claude",
+    "default_icon": "icon-128.png"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "tabs",
+    "alarms",
+    "notifications",
+    "webNavigation",
+    "declarativeNetRequestWithHostAccess",
+    "nativeMessaging",
+    "unlimitedStorage",
+    "downloads",
+    "webRequest"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "js": ["assets/content-script.ts-Bwa5rY9t.js"],
+      "matches": ["https://claude.ai/*", "https://*.claude.ai/*"],
+      "run_at": "document_end"
+    },
+    {
+      "js": ["assets/accessibility-tree.js-DxrE0N5Q.js"],
+      "matches": ["<all_urls>"],
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "js": ["firefox-compat-content.js", "assets/agent-visual-indicator.js-CQ3yeUso.js"],
+      "matches": ["<all_urls>"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "js": ["firefox-claude-ai-bridge.js"],
+      "matches": ["https://claude.ai/*", "https://*.claude.ai/*"],
+      "run_at": "document_end"
+    }
+  ],
+  "commands": {
+    "_execute_sidebar_action": {
+      "suggested_key": {
+        "default": "Ctrl+E",
+        "mac": "Command+E"
+      },
+      "description": "Toggle Claude sidebar"
+    }
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' https://api.anthropic.com wss://api.anthropic.com https://claude.ai https://platform.claude.com https://api.segment.io https://*.segment.com https://*.ingest.us.sentry.io https://api.honeycomb.io https://browser-intake-us5-datadoghq.com wss://bridge.claudeusercontent.com wss://bridge-staging.claudeusercontent.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:;"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["assets/*"],
+      "matches": ["https://claude.ai/*", "https://*.claude.ai/*"]
+    },
+    {
+      "resources": ["icon-128.png"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
