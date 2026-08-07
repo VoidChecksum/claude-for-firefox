@@ -110,17 +110,25 @@ inject_tokens() {
     banner "Injecting OAuth Tokens"
 
     local raw_creds=""
-    case "$OS" in
-        macos)
-            raw_creds="$(security find-generic-password -s 'Claude Code-credentials' -w 2>/dev/null || true)"
-            ;;
-        linux)
-            raw_creds="$(secret-tool lookup service 'Claude Code-credentials' 2>/dev/null || true)"
-            ;;
-    esac
+    # Prefer the on-disk credentials file — recent Claude Code versions store
+    # the OAuth tokens in ~/.claude/.credentials.json rather than the system
+    # keychain. Fall back to the keychain for older installs.
+    if [[ -f "$HOME/.claude/.credentials.json" ]]; then
+        raw_creds="$(cat "$HOME/.claude/.credentials.json" 2>/dev/null || true)"
+    fi
+    if [[ -z "$raw_creds" ]]; then
+        case "$OS" in
+            macos)
+                raw_creds="$(security find-generic-password -s 'Claude Code-credentials' -w 2>/dev/null || true)"
+                ;;
+            linux)
+                raw_creds="$(secret-tool lookup service 'Claude Code-credentials' 2>/dev/null || true)"
+                ;;
+        esac
+    fi
 
     if [[ -z "$raw_creds" ]]; then
-        warn "Could not read Claude Code credentials from system keychain."
+        warn "Could not read Claude Code credentials from ~/.claude/.credentials.json or the system keychain."
         warn "Run 'claude' at least once to log in, then re-run this installer"
         warn "  or run ~/.claude/firefox/refresh-tokens.sh later."
         return 0
@@ -267,19 +275,25 @@ EXT_DIR="$HOME/.claude/firefox/extension"
 TOKEN_FILE="$EXT_DIR/firefox-injected-tokens.json"
 
 raw_creds=""
-case "$(uname -s)" in
-    Darwin)
-        raw_creds="$(security find-generic-password -s 'Claude Code-credentials' -w 2>/dev/null || true)"
-        ;;
-    Linux)
-        raw_creds="$(secret-tool lookup service 'Claude Code-credentials' 2>/dev/null || true)"
-        ;;
-    *)
-        echo "Unsupported OS for token refresh." >&2; exit 1 ;;
-esac
+# Prefer the on-disk credentials file (current Claude Code); fall back to keychain.
+if [[ -f "$HOME/.claude/.credentials.json" ]]; then
+    raw_creds="$(cat "$HOME/.claude/.credentials.json" 2>/dev/null || true)"
+fi
+if [[ -z "$raw_creds" ]]; then
+    case "$(uname -s)" in
+        Darwin)
+            raw_creds="$(security find-generic-password -s 'Claude Code-credentials' -w 2>/dev/null || true)"
+            ;;
+        Linux)
+            raw_creds="$(secret-tool lookup service 'Claude Code-credentials' 2>/dev/null || true)"
+            ;;
+        *)
+            echo "Unsupported OS for token refresh." >&2; exit 1 ;;
+    esac
+fi
 
 if [[ -z "$raw_creds" ]]; then
-    echo "Error: Could not read Claude Code credentials. Log into Claude Code first." >&2
+    echo "Error: Could not read Claude Code credentials from ~/.claude/.credentials.json or the keychain. Log into Claude Code first." >&2
     exit 1
 fi
 

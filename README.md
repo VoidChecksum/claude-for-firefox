@@ -165,6 +165,8 @@ powershell -File %USERPROFILE%\.claude\firefox\refresh-tokens.ps1
 
 This reads current tokens from Claude Code's credential store and writes them to `firefox-injected-tokens.json`. The extension picks up new tokens automatically.
 
+Recent Claude Code versions store the OAuth tokens in `~/.claude/.credentials.json` (Windows: `%USERPROFILE%\.claude\.credentials.json`) instead of the system keychain / Windows Credential Manager. The installer and refresh scripts read that file first and fall back to the keychain, so a bad/empty keychain entry no longer breaks token injection. If the **Log in** button loops back to the login screen or chat spins forever, your injected token has expired — re-run the refresh script (or the installer) to pull a fresh one.
+
 ---
 
 ## Known limitations
