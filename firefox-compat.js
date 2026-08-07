@@ -21,7 +21,12 @@
       const cb = typeof last === 'function' ? args.pop() : null;
       const p = fn.apply(this, args);
       if (cb) {
-        p.then(r => cb(r), e => { chrome.runtime.lastError = e; cb(undefined); });
+        p.then(r => cb(r), e => {
+          // chrome.runtime.lastError is a getter-only property in Firefox;
+          // assigning to it throws. Best-effort set, then invoke the callback.
+          try { chrome.runtime.lastError = e; } catch (_) { /* read-only in FF */ }
+          cb(undefined);
+        });
       }
       return p;
     };
@@ -184,6 +189,12 @@
     onMoved: makeEvent(),
   };
 
+  // Native tabs.get captured before any patching. Needed because chrome.tabs
+  // and browser.tabs are the same object in Firefox — once chrome.tabs.get is
+  // replaced below, browser.tabs.get points at the wrapper and calling it from
+  // inside these patches would recurse infinitely.
+  const nativeTabsGet = chrome.tabs.get.bind(chrome.tabs);
+
   // Patch chrome.tabs.group
   const origTabsGroup = chrome.tabs.group;
   chrome.tabs.group = promiseToCallback(async function (options) {
@@ -194,7 +205,7 @@
       let windowId = -1;
       if (tabIds.length > 0) {
         try {
-          const t = await browser.tabs.get(tabIds[0]);
+          const t = await nativeTabsGet(tabIds[0]);
           windowId = t.windowId;
         } catch (_) { /* fallback */ }
       }
@@ -231,9 +242,8 @@
   });
 
   // Patch chrome.tabs.get to include groupId
-  const origTabsGet = chrome.tabs.get.bind(chrome.tabs);
   chrome.tabs.get = promiseToCallback(async function (tabId) {
-    const tab = await browser.tabs.get(tabId);
+    const tab = await nativeTabsGet(tabId);
     await loadGroupCache();
     tab.groupId = tabGroupMap.get(tabId) ?? TAB_GROUP_ID_NONE;
     return tab;
@@ -245,7 +255,11 @@
     const filterGroupId = queryInfo ? queryInfo.groupId : undefined;
     const cleanQuery = { ...queryInfo };
     delete cleanQuery.groupId;
-    let tabs = await browser.tabs.query(cleanQuery);
+    // Use the captured native query (origTabsQuery), NOT browser.tabs.query:
+    // in Firefox chrome.tabs and browser.tabs are the same object, so after we
+    // reassign chrome.tabs.query below, browser.tabs.query points at this very
+    // wrapper — calling it here would recurse infinitely ("too much recursion").
+    let tabs = await origTabsQuery(cleanQuery);
 
     // Firefox: called from the sidebar, { active: true, currentWindow: true }
     // can return empty because the sidebar's "current window" doesn't resolve
@@ -258,14 +272,14 @@
         const q2 = { ...cleanQuery };
         delete q2.currentWindow;
         q2.lastFocusedWindow = true;
-        tabs = await browser.tabs.query(q2);
+        tabs = await origTabsQuery(q2);
       } catch (_) { /* noop */ }
       if (tabs.length === 0) {
         try {
           const q3 = { ...cleanQuery };
           delete q3.currentWindow;
           delete q3.lastFocusedWindow;
-          tabs = (await browser.tabs.query(q3)).sort(byLastAccess);
+          tabs = (await origTabsQuery(q3)).sort(byLastAccess);
         } catch (_) { /* noop */ }
       }
     }
