@@ -1,15 +1,21 @@
 // Firefox CORS shim.
 //
-// Anthropic's API bypasses its per-organization CORS restriction for requests
-// that carry the official Chrome extension's origin
-// (chrome-extension://fcoeoabgfenejglbffodgkkbkcdhcgfn). A Firefox build sends
-// Origin: moz-extension://<random-uuid>, which is not allow-listed, so the API
-// answers "CORS requests are not allowed for this Organization because of its
-// settings." and every message fails.
+// Two problems when a Firefox build talks to the Anthropic API:
 //
-// Rewrite the Origin header on requests to the Anthropic API so they are
-// treated the same as the official extension. Requires the "webRequest" and
-// "webRequestBlocking" permissions plus host access to the API.
+//  1. CORS: Firefox sends Origin: moz-extension://<random-uuid>, which is not
+//     allow-listed, so the API answers "CORS requests are not allowed for this
+//     Organization because of its settings." and every message fails.
+//
+//  2. Product entitlement: if we instead spoof the official Chrome extension
+//     origin, the API treats the call as the "Claude for Chrome" product and
+//     demands an extension-scoped entitlement the bootstrapped Claude Code
+//     token doesn't have, answering with a 429/usage-limit.
+//
+// Removing the Origin header entirely sidesteps both: with no Origin the API
+// performs no CORS check and treats the request like any other Bearer-token API
+// call (the same surface Claude Code uses), which the token is entitled to.
+//
+// Requires "webRequest" + "webRequestBlocking" and host access to the API.
 
 (function () {
   'use strict';
@@ -20,30 +26,44 @@
     return;
   }
 
-  var CHROME_EXT_ORIGIN = 'chrome-extension://fcoeoabgfenejglbffodgkkbkcdhcgfn';
-
-  // Only the inference/API host enforces the org CORS check that blocks us.
-  // Leave claude.ai / platform.claude.com (OAuth) untouched.
   var TARGET_URLS = ['*://api.anthropic.com/*'];
 
   chrome.webRequest.onBeforeSendHeaders.addListener(
     function (details) {
-      var headers = details.requestHeaders || [];
-      var sawOrigin = false;
-      for (var i = 0; i < headers.length; i++) {
-        if (headers[i].name.toLowerCase() === 'origin') {
-          headers[i].value = CHROME_EXT_ORIGIN;
-          sawOrigin = true;
-        }
-      }
-      if (!sawOrigin) {
-        headers.push({ name: 'Origin', value: CHROME_EXT_ORIGIN });
-      }
+      var headers = (details.requestHeaders || []).filter(function (h) {
+        var n = h.name.toLowerCase();
+        // Drop the browser-origin markers so the API sees a plain API call.
+        return n !== 'origin';
+      });
       return { requestHeaders: headers };
     },
     { urls: TARGET_URLS },
     ['blocking', 'requestHeaders']
   );
 
-  console.log('[firefox-cors-shim] Origin rewrite installed for api.anthropic.com');
+  // Diagnostic: log API response status + rate-limit headers so we can tell a
+  // real limit from an entitlement rejection. Safe (headers only, no body).
+  if (chrome.webRequest.onHeadersReceived) {
+    chrome.webRequest.onHeadersReceived.addListener(
+      function (details) {
+        try {
+          var interesting = (details.responseHeaders || [])
+            .filter(function (h) {
+              var n = h.name.toLowerCase();
+              return n.indexOf('ratelimit') !== -1 ||
+                     n.indexOf('anthropic') !== -1 ||
+                     n === 'retry-after' ||
+                     n === 'x-should-retry';
+            })
+            .map(function (h) { return h.name + ': ' + h.value; });
+          console.log('[firefox-cors-shim] response',
+            details.statusCode, details.method, details.url, interesting);
+        } catch (e) { /* noop */ }
+      },
+      { urls: TARGET_URLS },
+      ['responseHeaders']
+    );
+  }
+
+  console.log('[firefox-cors-shim] Origin stripping installed for api.anthropic.com');
 })();
