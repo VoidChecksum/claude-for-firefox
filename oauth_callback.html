@@ -116,8 +116,14 @@
           return;
         }
 
+        // The background handler (handleOAuthRedirect) parses the code/state
+        // out of the full redirect URL via `new URL(redirect_uri)`. It reads
+        // `message.redirect_uri`, NOT `message.code`/`message.state`, so we
+        // must forward the complete URL here or the exchange throws on
+        // `new URL(undefined)` and returns { success: false }.
         var message = {
           type: 'EXTERNAL_oauth_redirect',
+          redirect_uri: window.location.href,
           code: code,
           state: state || '',
         };

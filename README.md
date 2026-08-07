@@ -145,7 +145,9 @@ Firefox does not support all Chrome extension APIs. This port includes a compati
 
 ### OAuth
 
-Anthropic's OAuth server only accepts `chrome-extension://` redirect URIs, which Firefox cannot produce. Instead of the browser OAuth flow, the installer reads tokens from Claude Code's existing authenticated session (stored in the OS keychain) and injects them into the extension's storage. A periodic refresh check keeps them current.
+Anthropic's OAuth server only accepts `chrome-extension://` redirect URIs, which Firefox cannot produce — so the interactive browser OAuth flow dead-ends on an "Authorization failed" page. Instead, the installer reads tokens from Claude Code's existing authenticated session (stored in the OS keychain) and injects them into the extension's storage. A periodic refresh check keeps them current.
+
+The **Log in** button is wired to the same mechanism: clicking it no longer opens the (broken) `claude.ai/oauth/authorize` page. `firefox-compat.js` intercepts that navigation and bootstraps the injected Claude Code tokens straight into extension storage, then reloads the sidebar. If no token file exists yet, it falls back to the OAuth page and logs a hint to run the installer. (`firefox-oauth-interceptor.js` + `oauth_callback.html` remain in place for the direct web flow, should Anthropic ever register a Firefox redirect URI.)
 
 ---
 

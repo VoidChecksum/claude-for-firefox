@@ -347,6 +347,88 @@
     };
   }
 
+  // ─── 4b. Login via Claude Code tokens ─────────────────────────────
+  // Anthropic's OAuth server only redirects back to chrome-extension://
+  // URIs, so the interactive "Log in" button (which opens
+  // https://claude.ai/oauth/authorize?...) dead-ends on Firefox with an
+  // "Authorization failed" page. Instead of that flow, intercept the login
+  // navigation and bootstrap the same tokens the installer injects from the
+  // signed-in Claude Code session (firefox-injected-tokens.json). If no token
+  // file is present we fall back to opening the real OAuth page unchanged.
+  if (chrome.tabs && typeof chrome.tabs.create === 'function') {
+    const TOKEN_FILE = chrome.runtime.getURL('firefox-injected-tokens.json');
+
+    const isLoginUrl = (url) =>
+      typeof url === 'string' &&
+      url.indexOf('claude.ai') !== -1 &&
+      url.indexOf('/oauth/authorize') !== -1;
+
+    async function bootstrapTokensFromFile() {
+      let resp;
+      try {
+        resp = await fetch(TOKEN_FILE);
+      } catch (_) {
+        return false;
+      }
+      if (!resp || !resp.ok) return false;
+
+      let data;
+      try {
+        data = await resp.json();
+      } catch (_) {
+        return false;
+      }
+      if (!data || !data.accessToken) return false;
+
+      const tokens = {
+        accessToken: data.accessToken,
+        refreshToken: data.refreshToken || '',
+        tokenExpiry: typeof data.expiresAt === 'number'
+          ? data.expiresAt
+          : (typeof data.tokenExpiry === 'number' ? data.tokenExpiry : 0),
+      };
+
+      await new Promise((res) => chrome.storage.local.set(tokens, res));
+      // Clear any stale failure marker so the app doesn't keep showing an error.
+      try {
+        await new Promise((res) => chrome.storage.local.remove('lastAuthFailureReason', res));
+      } catch (_) { /* best-effort */ }
+      return true;
+    }
+
+    const _origTabsCreate = chrome.tabs.create.bind(chrome.tabs);
+    chrome.tabs.create = function (createProperties, callback) {
+      if (!createProperties || !isLoginUrl(createProperties.url)) {
+        return _origTabsCreate(createProperties, callback);
+      }
+
+      console.log(TAG, 'Login intercepted — bootstrapping tokens from Claude Code');
+      const p = bootstrapTokensFromFile().then((ok) => {
+        if (ok) {
+          console.log(TAG, 'Logged in using Claude Code session tokens');
+          // Reload the sidebar/page so the app re-checks auth and shows chat.
+          if (typeof document !== 'undefined' &&
+              document.getElementById && document.getElementById('root')) {
+            setTimeout(() => { try { location.reload(); } catch (_) { /* noop */ } }, 150);
+          }
+          return undefined; // no tab was opened
+        }
+        console.warn(TAG,
+          'No injected token file found. Run install.ps1 (or refresh-tokens) ' +
+          'after signing in with Claude Code, then click Log in again. ' +
+          'Falling back to the OAuth page.');
+        return _origTabsCreate(createProperties);
+      });
+
+      if (typeof callback === 'function') {
+        p.then((tab) => callback(tab), () => callback(undefined));
+      }
+      return p;
+    };
+
+    console.log(TAG, 'Login token bootstrap installed');
+  }
+
   // ─── 5. chrome.debugger shim ──────────────────────────────────────
   if (typeof chrome.debugger === 'undefined') {
     const debuggerSessions = new Map(); // tabId → true
