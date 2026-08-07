@@ -245,7 +245,31 @@
     const filterGroupId = queryInfo ? queryInfo.groupId : undefined;
     const cleanQuery = { ...queryInfo };
     delete cleanQuery.groupId;
-    const tabs = await browser.tabs.query(cleanQuery);
+    let tabs = await browser.tabs.query(cleanQuery);
+
+    // Firefox: called from the sidebar, { active: true, currentWindow: true }
+    // can return empty because the sidebar's "current window" doesn't resolve
+    // to the browser window holding the active web tab. Without a tab the agent
+    // throws "No active tab". Fall back to the last focused window, then to the
+    // most-recently-accessed active tab across all windows.
+    if (tabs.length === 0 && cleanQuery.active) {
+      const byLastAccess = (a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0);
+      try {
+        const q2 = { ...cleanQuery };
+        delete q2.currentWindow;
+        q2.lastFocusedWindow = true;
+        tabs = await browser.tabs.query(q2);
+      } catch (_) { /* noop */ }
+      if (tabs.length === 0) {
+        try {
+          const q3 = { ...cleanQuery };
+          delete q3.currentWindow;
+          delete q3.lastFocusedWindow;
+          tabs = (await browser.tabs.query(q3)).sort(byLastAccess);
+        } catch (_) { /* noop */ }
+      }
+    }
+
     await loadGroupCache();
     for (const tab of tabs) {
       tab.groupId = tabGroupMap.get(tab.id) ?? TAB_GROUP_ID_NONE;
