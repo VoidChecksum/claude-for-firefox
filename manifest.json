@@ -42,7 +42,8 @@
     "nativeMessaging",
     "unlimitedStorage",
     "downloads",
-    "webRequest"
+    "webRequest",
+    "webRequestBlocking"
   ],
   "host_permissions": [
     "<all_urls>"

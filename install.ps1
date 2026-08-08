@@ -146,7 +146,21 @@ function Inject-Tokens {
     $tokenFile = Join-Path $ExtDir 'firefox-injected-tokens.json'
     $rawCreds = $null
 
-    # Try CredentialManager module first
+    # Prefer the on-disk credentials file — recent Claude Code versions store
+    # the OAuth tokens in %USERPROFILE%\.claude\.credentials.json instead of the
+    # Windows Credential Manager. Fall back to Credential Manager for older installs.
+    $credFile = Join-Path $env:USERPROFILE '.claude\.credentials.json'
+    if (Test-Path $credFile) {
+        try {
+            $rawCreds = Get-Content $credFile -Raw -ErrorAction Stop
+            Write-Info "Read Claude Code credentials from $credFile"
+        } catch {
+            Write-Warn "Found $credFile but could not read it: $_"
+        }
+    }
+
+    # Try CredentialManager module next
+    if (-not $rawCreds) {
     try {
         if (Get-Module -ListAvailable -Name CredentialManager -ErrorAction SilentlyContinue) {
             Import-Module CredentialManager -ErrorAction Stop
@@ -157,6 +171,7 @@ function Inject-Tokens {
         }
     } catch {
         # Module not available or failed
+    }
     }
 
     # Fallback: cmdkey + PowerShell credential vault
@@ -210,7 +225,7 @@ public class CredHelper {
     }
 
     if (-not $rawCreds) {
-        Write-Warn "Could not read Claude Code credentials from Windows Credential Manager."
+        Write-Warn "Could not read Claude Code credentials from %USERPROFILE%\.claude\.credentials.json or the Windows Credential Manager."
         Write-Warn "Run 'claude' at least once to log in, then re-run this installer."
         return
     }
@@ -341,20 +356,28 @@ Start-Process '$FirefoxPath' -ArgumentList '--new-instance'
     # Token refresh script
     $refreshPath = Join-Path $InstallDir 'refresh-tokens.ps1'
     $refreshContent = @'
-# Refresh OAuth tokens from Claude Code's Credential Manager into the Firefox extension.
+# Refresh OAuth tokens from Claude Code into the Firefox extension.
 $ErrorActionPreference = 'Stop'
 
 $tokenFile = Join-Path $env:USERPROFILE '.claude\firefox\extension\firefox-injected-tokens.json'
 $rawCreds = $null
 
-# Try CredentialManager module
-try {
-    if (Get-Module -ListAvailable -Name CredentialManager -ErrorAction SilentlyContinue) {
-        Import-Module CredentialManager
-        $cred = Get-StoredCredential -Target 'Claude Code-credentials' -ErrorAction SilentlyContinue
-        if ($cred) { $rawCreds = $cred.GetNetworkCredential().Password }
-    }
-} catch {}
+# Prefer the on-disk credentials file (current Claude Code stores tokens here).
+$credFile = Join-Path $env:USERPROFILE '.claude\.credentials.json'
+if (Test-Path $credFile) {
+    try { $rawCreds = Get-Content $credFile -Raw -ErrorAction Stop } catch {}
+}
+
+# Fallback: CredentialManager module
+if (-not $rawCreds) {
+    try {
+        if (Get-Module -ListAvailable -Name CredentialManager -ErrorAction SilentlyContinue) {
+            Import-Module CredentialManager
+            $cred = Get-StoredCredential -Target 'Claude Code-credentials' -ErrorAction SilentlyContinue
+            if ($cred) { $rawCreds = $cred.GetNetworkCredential().Password }
+        }
+    } catch {}
+}
 
 # Fallback: .NET interop
 if (-not $rawCreds) {

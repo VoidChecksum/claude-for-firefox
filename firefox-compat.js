@@ -21,7 +21,12 @@
       const cb = typeof last === 'function' ? args.pop() : null;
       const p = fn.apply(this, args);
       if (cb) {
-        p.then(r => cb(r), e => { chrome.runtime.lastError = e; cb(undefined); });
+        p.then(r => cb(r), e => {
+          // chrome.runtime.lastError is a getter-only property in Firefox;
+          // assigning to it throws. Best-effort set, then invoke the callback.
+          try { chrome.runtime.lastError = e; } catch (_) { /* read-only in FF */ }
+          cb(undefined);
+        });
       }
       return p;
     };
@@ -184,6 +189,12 @@
     onMoved: makeEvent(),
   };
 
+  // Native tabs.get captured before any patching. Needed because chrome.tabs
+  // and browser.tabs are the same object in Firefox — once chrome.tabs.get is
+  // replaced below, browser.tabs.get points at the wrapper and calling it from
+  // inside these patches would recurse infinitely.
+  const nativeTabsGet = chrome.tabs.get.bind(chrome.tabs);
+
   // Patch chrome.tabs.group
   const origTabsGroup = chrome.tabs.group;
   chrome.tabs.group = promiseToCallback(async function (options) {
@@ -194,7 +205,7 @@
       let windowId = -1;
       if (tabIds.length > 0) {
         try {
-          const t = await browser.tabs.get(tabIds[0]);
+          const t = await nativeTabsGet(tabIds[0]);
           windowId = t.windowId;
         } catch (_) { /* fallback */ }
       }
@@ -231,9 +242,8 @@
   });
 
   // Patch chrome.tabs.get to include groupId
-  const origTabsGet = chrome.tabs.get.bind(chrome.tabs);
   chrome.tabs.get = promiseToCallback(async function (tabId) {
-    const tab = await browser.tabs.get(tabId);
+    const tab = await nativeTabsGet(tabId);
     await loadGroupCache();
     tab.groupId = tabGroupMap.get(tabId) ?? TAB_GROUP_ID_NONE;
     return tab;
@@ -245,7 +255,35 @@
     const filterGroupId = queryInfo ? queryInfo.groupId : undefined;
     const cleanQuery = { ...queryInfo };
     delete cleanQuery.groupId;
-    const tabs = await browser.tabs.query(cleanQuery);
+    // Use the captured native query (origTabsQuery), NOT browser.tabs.query:
+    // in Firefox chrome.tabs and browser.tabs are the same object, so after we
+    // reassign chrome.tabs.query below, browser.tabs.query points at this very
+    // wrapper — calling it here would recurse infinitely ("too much recursion").
+    let tabs = await origTabsQuery(cleanQuery);
+
+    // Firefox: called from the sidebar, { active: true, currentWindow: true }
+    // can return empty because the sidebar's "current window" doesn't resolve
+    // to the browser window holding the active web tab. Without a tab the agent
+    // throws "No active tab". Fall back to the last focused window, then to the
+    // most-recently-accessed active tab across all windows.
+    if (tabs.length === 0 && cleanQuery.active) {
+      const byLastAccess = (a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0);
+      try {
+        const q2 = { ...cleanQuery };
+        delete q2.currentWindow;
+        q2.lastFocusedWindow = true;
+        tabs = await origTabsQuery(q2);
+      } catch (_) { /* noop */ }
+      if (tabs.length === 0) {
+        try {
+          const q3 = { ...cleanQuery };
+          delete q3.currentWindow;
+          delete q3.lastFocusedWindow;
+          tabs = (await origTabsQuery(q3)).sort(byLastAccess);
+        } catch (_) { /* noop */ }
+      }
+    }
+
     await loadGroupCache();
     for (const tab of tabs) {
       tab.groupId = tabGroupMap.get(tab.id) ?? TAB_GROUP_ID_NONE;
@@ -345,6 +383,88 @@
         return { email: '', id: '' };
       }),
     };
+  }
+
+  // ─── 4b. Login via Claude Code tokens ─────────────────────────────
+  // Anthropic's OAuth server only redirects back to chrome-extension://
+  // URIs, so the interactive "Log in" button (which opens
+  // https://claude.ai/oauth/authorize?...) dead-ends on Firefox with an
+  // "Authorization failed" page. Instead of that flow, intercept the login
+  // navigation and bootstrap the same tokens the installer injects from the
+  // signed-in Claude Code session (firefox-injected-tokens.json). If no token
+  // file is present we fall back to opening the real OAuth page unchanged.
+  if (chrome.tabs && typeof chrome.tabs.create === 'function') {
+    const TOKEN_FILE = chrome.runtime.getURL('firefox-injected-tokens.json');
+
+    const isLoginUrl = (url) =>
+      typeof url === 'string' &&
+      url.indexOf('claude.ai') !== -1 &&
+      url.indexOf('/oauth/authorize') !== -1;
+
+    async function bootstrapTokensFromFile() {
+      let resp;
+      try {
+        resp = await fetch(TOKEN_FILE);
+      } catch (_) {
+        return false;
+      }
+      if (!resp || !resp.ok) return false;
+
+      let data;
+      try {
+        data = await resp.json();
+      } catch (_) {
+        return false;
+      }
+      if (!data || !data.accessToken) return false;
+
+      const tokens = {
+        accessToken: data.accessToken,
+        refreshToken: data.refreshToken || '',
+        tokenExpiry: typeof data.expiresAt === 'number'
+          ? data.expiresAt
+          : (typeof data.tokenExpiry === 'number' ? data.tokenExpiry : 0),
+      };
+
+      await new Promise((res) => chrome.storage.local.set(tokens, res));
+      // Clear any stale failure marker so the app doesn't keep showing an error.
+      try {
+        await new Promise((res) => chrome.storage.local.remove('lastAuthFailureReason', res));
+      } catch (_) { /* best-effort */ }
+      return true;
+    }
+
+    const _origTabsCreate = chrome.tabs.create.bind(chrome.tabs);
+    chrome.tabs.create = function (createProperties, callback) {
+      if (!createProperties || !isLoginUrl(createProperties.url)) {
+        return _origTabsCreate(createProperties, callback);
+      }
+
+      console.log(TAG, 'Login intercepted — bootstrapping tokens from Claude Code');
+      const p = bootstrapTokensFromFile().then((ok) => {
+        if (ok) {
+          console.log(TAG, 'Logged in using Claude Code session tokens');
+          // Reload the sidebar/page so the app re-checks auth and shows chat.
+          if (typeof document !== 'undefined' &&
+              document.getElementById && document.getElementById('root')) {
+            setTimeout(() => { try { location.reload(); } catch (_) { /* noop */ } }, 150);
+          }
+          return undefined; // no tab was opened
+        }
+        console.warn(TAG,
+          'No injected token file found. Run install.ps1 (or refresh-tokens) ' +
+          'after signing in with Claude Code, then click Log in again. ' +
+          'Falling back to the OAuth page.');
+        return _origTabsCreate(createProperties);
+      });
+
+      if (typeof callback === 'function') {
+        p.then((tab) => callback(tab), () => callback(undefined));
+      }
+      return p;
+    };
+
+    console.log(TAG, 'Login token bootstrap installed');
   }
 
   // ─── 5. chrome.debugger shim ──────────────────────────────────────
